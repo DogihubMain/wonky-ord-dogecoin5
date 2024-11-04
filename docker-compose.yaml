@@ -1,6 +1,8 @@
 services:
   ord-indexer:
-    image: verydogelabs/wonky-ord-dogecoin
+    build:
+      context: .
+      dockerfile: ./Dockerfile
     env_file:
       - .env
     environment:
@@ -19,7 +21,7 @@ services:
       "ord",
       "--rpc-url=${RPC_URL}",
       "--data-dir=/root/.data",
-      "--nr-parallel-requests=250",
+      "--nr-parallel-requests=96",
       "--first-inscription-height=${FIRST_INSCRIPTION_HEIGHT}",
       "--first-dune-height=${FIRST_DUNE_HEIGHT}",
       "--index-dunes",
@@ -28,9 +30,11 @@ services:
       "server"
     ]
     volumes:
-      - ${DOG_MOUNT_DIR_INDEXER:-/mnt/ord-node}/indexer-data-main:/root/.data:delegated
+      #- ${DOG_MOUNT_DIR_INDEXER:-/mnt/ord-node}/indexer-data-main:/root/.data:delegated
       # If your dogecoin node is running in a container, you can mount the dogecoin data directory to the indexer container
       # - dog-data:/root/.dogecoin
+      - /app/dogecoin-node/volume:/root/.dogecoin:ro
+      - ./wonky_ord_data:/root/.data
     logging:
       driver: "json-file"
       options:
