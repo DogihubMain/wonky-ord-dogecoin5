@@ -10,18 +10,26 @@ pub(crate) struct OutputHtml {
   pub(crate) dunes: Vec<(SpacedDune, Pile)>,
 }
 
+impl OutputHtml {
+  pub(crate) fn to_json(&self) -> OutputJson {
+    return OutputJson::new(
+      self.chain.clone(),
+      self.inscriptions.clone(),
+      self.outpoint.clone(),
+      self.output.clone(),
+      self.dunes.clone(),
+    );
+  }
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AddressOutputJson {
   pub(crate) outpoint: Vec<OutPoint>,
 }
 
 impl AddressOutputJson {
-  pub fn new(
-    outputs: Vec<OutPoint>,
-  ) -> Self {
-    Self {
-      outpoint: outputs
-    }
+  pub fn new(outputs: Vec<OutPoint>) -> Self {
+    Self { outpoint: outputs }
   }
 }
 
@@ -51,9 +59,9 @@ impl OutputJson {
   ) -> Self {
     Self {
       address: chain
-          .address_from_script(&output.script_pubkey)
-          .ok()
-          .map(|address| address.to_string()),
+        .address_from_script(&output.script_pubkey)
+        .ok()
+        .map(|address| address.to_string()),
       inscriptions,
       dunes,
       script_pubkey: output.script_pubkey.asm(),

@@ -1,3 +1,6 @@
+use crate::drc20::operation::{deserialize_drc20_operation, Action};
+use crate::drc20::token_info::{ExtendedTokenInfo, HolderBalanceForTick, HoldersInfoForTick};
+use crate::templates::{DRC20Balance, DRC20Output, DRC20UtxoOutput};
 use http::HeaderName;
 use linked_hash_map::LinkedHashMap;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
@@ -15,8 +18,8 @@ use {
       AddressOutputJson, BlockHtml, BlockJson, DuneAddressJson, DuneBalance, DuneBalancesHtml,
       DuneEntryJson, DuneHtml, DuneJson, DuneOutput, DuneOutputJson, DunesHtml, HomeHtml,
       InputHtml, InscriptionByAddressJson, InscriptionHtml, InscriptionJson, InscriptionsHtml,
-      OutputHtml, OutputJson, PageContent, PageHtml, PreviewAudioHtml, PreviewImageHtml,
-      PreviewModelHtml, PreviewPdfHtml, PreviewTextHtml, Operation, PreviewUnknownHtml, PreviewVideoHtml,
+      Operation, OutputHtml, OutputJson, PageContent, PageHtml, PreviewAudioHtml, PreviewImageHtml,
+      PreviewModelHtml, PreviewPdfHtml, PreviewTextHtml, PreviewUnknownHtml, PreviewVideoHtml,
       RangeHtml, RareTxt, SatHtml, ShibescriptionJson, TransactionHtml, Utxo, DRC20,
     },
   },
@@ -47,9 +50,6 @@ use {
     set_header::SetResponseHeaderLayer,
   },
 };
-use crate::drc20::operation::{deserialize_drc20_operation, Action};
-use crate::drc20::token_info::{ExtendedTokenInfo, HolderBalanceForTick, HoldersInfoForTick};
-use crate::templates::{DRC20Balance, DRC20Output, DRC20UtxoOutput};
 
 mod error;
 mod query;
@@ -340,8 +340,8 @@ impl Server {
         .route("/drc20/tick/:tick", get(Self::drc20_tick_info))
         .route("/drc20/tick", get(Self::drc20_all_tick_info))
         .route(
-            "/drc20/balance/:address",
-            get(Self::drc20_by_address_unpaginated),
+          "/drc20/balance/:address",
+          get(Self::drc20_by_address_unpaginated),
         )
         .route("/drc20/validate", get(Self::drc20_validate))
         .route("/drc20/ticks", get(Self::drc20_all_ticks))
@@ -566,8 +566,10 @@ impl Server {
     Extension(page_config): Extension<Arc<PageConfig>>,
     Extension(index): Extension<Arc<Index>>,
     Path(outpoint): Path<OutPoint>,
-  ) -> ServerResult<PageHtml<OutputHtml>> {
+    Query(query): Query<JsonQuery>,
+  ) -> ServerResult<Response> {
     let list = index.list(outpoint)?;
+    let json = query.json.unwrap_or(false);
 
     let output = if outpoint == OutPoint::null() {
       let mut value = 0;
@@ -596,17 +598,20 @@ impl Server {
 
     let dunes = index.get_dune_balances_for_outpoint(outpoint)?;
 
-    Ok(
-      OutputHtml {
-        outpoint,
-        inscriptions,
-        list,
-        chain: page_config.chain,
-        output,
-        dunes,
-      }
-      .page(page_config),
-    )
+    let response: OutputHtml = OutputHtml {
+      outpoint,
+      inscriptions,
+      list,
+      chain: page_config.chain,
+      output,
+      dunes,
+    };
+
+    Ok(if !json {
+      response.page(page_config).into_response()
+    } else {
+      Json(response.to_json()).into_response()
+    })
   }
 
   async fn utxos_by_address(
