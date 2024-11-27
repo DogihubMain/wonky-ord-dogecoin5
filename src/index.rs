@@ -8,11 +8,12 @@ use {
     reorg::*,
     updater::Updater,
   },
-  bitcoin::BlockHeader,
-  bitcoincore_rpc::{Auth, Client, json::GetBlockHeaderResult},
-  chrono::SubsecRound,
+  super::*,
   crate::inscription::ParsedInscription,
   crate::wallet::Wallet,
+  bitcoin::BlockHeader,
+  bitcoincore_rpc::{json::GetBlockHeaderResult, Auth, Client},
+  chrono::SubsecRound,
   indicatif::{ProgressBar, ProgressStyle},
   log::log_enabled,
   redb::{
@@ -22,12 +23,14 @@ use {
   std::collections::HashMap,
   std::io::Cursor,
   std::sync::atomic::{self, AtomicBool},
-  super::*,
   url::Url,
 };
 
-use crate::drc20::{Balance, max_script_tick_key, min_script_tick_key, script_tick_key, Tick, TokenInfo, TransferableLog, min_script_tick_id_key, max_script_tick_id_key};
 use crate::drc20::script_key::ScriptKey;
+use crate::drc20::{
+  max_script_tick_id_key, max_script_tick_key, min_script_tick_id_key, min_script_tick_key,
+  script_tick_key, Balance, Tick, TokenInfo, TransferableLog,
+};
 use crate::sat::Sat;
 use crate::sat_point::SatPoint;
 use crate::templates::BlockHashAndConfirmations;
@@ -35,8 +38,8 @@ use crate::templates::BlockHashAndConfirmations;
 pub(crate) use self::entry::DuneEntry;
 
 pub(crate) mod entry;
-mod reorg;
 mod fetcher;
+mod reorg;
 mod rtx;
 mod updater;
 
@@ -325,7 +328,7 @@ impl Index {
             outpoint_to_sat_ranges.insert(&OutPoint::null().store(), [].as_slice())?;
           }
 
-          index_drc20 = options.index_dunes();
+          index_drc20 = options.index_drc20();
           index_dunes = options.index_dunes();
           index_sats = options.index_sats;
           index_transactions = options.index_transactions;
@@ -505,22 +508,22 @@ impl Index {
         Err(err) => {
           log::info!("{}", err.to_string());
 
-            match err.downcast_ref() {
-              Some(&ReorgError::Recoverable { height, depth }) => {
-                Reorg::handle_reorg(self, height, depth)?;
+          match err.downcast_ref() {
+            Some(&ReorgError::Recoverable { height, depth }) => {
+              Reorg::handle_reorg(self, height, depth)?;
 
-                updater = Updater::new(self)?;
-              }
-              Some(&ReorgError::Unrecoverable) => {
-                self
-                  .unrecoverably_reorged
-                  .store(true, atomic::Ordering::Relaxed);
-                return Err(anyhow!(ReorgError::Unrecoverable));
-              }
-              _ => return Err(err),
-            };
-          }
+              updater = Updater::new(self)?;
+            }
+            Some(&ReorgError::Unrecoverable) => {
+              self
+                .unrecoverably_reorged
+                .store(true, atomic::Ordering::Relaxed);
+              return Err(anyhow!(ReorgError::Unrecoverable));
+            }
+            _ => return Err(err),
+          };
         }
+      }
     }
   }
 
@@ -1674,9 +1677,9 @@ impl Index {
 #[cfg(test)]
 mod tests {
   use {
-    bitcoin::secp256k1::rand::{self, RngCore},
-    crate::index::testing::Context,
     super::*,
+    crate::index::testing::Context,
+    bitcoin::secp256k1::rand::{self, RngCore},
   };
 
   #[test]
@@ -2962,8 +2965,8 @@ mod tests {
       context.mine_blocks(6);
 
       context
-          .index
-          .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
 
       let txid = context.rpc_server.broadcast_tx(TransactionTemplate {
         inputs: &[(2, 0, 0)],
@@ -2979,15 +2982,15 @@ mod tests {
       context.mine_blocks(1);
 
       context
-          .index
-          .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
+        .index
+        .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
 
       context.rpc_server.invalidate_tip();
       context.mine_blocks(2);
 
       context
-          .index
-          .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
 
       context.index.assert_non_existence_of_inscription(second_id);
     }
@@ -3025,8 +3028,8 @@ mod tests {
       context.mine_blocks(1);
 
       context
-          .index
-          .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
+        .index
+        .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
 
       context.rpc_server.invalidate_tip();
       context.rpc_server.invalidate_tip();
@@ -3041,8 +3044,8 @@ mod tests {
       context.mine_blocks(2);
 
       context
-          .index
-          .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
     }
   }
 
@@ -3080,8 +3083,8 @@ mod tests {
       context.mine_blocks(7);
 
       context
-          .index
-          .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
+        .index
+        .assert_inscription_location(second_id, second_location, Some(100 * COIN_VALUE));
 
       for _ in 0..7 {
         context.rpc_server.invalidate_tip();
@@ -3092,8 +3095,8 @@ mod tests {
       context.index.assert_non_existence_of_inscription(second_id);
 
       context
-          .index
-          .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
+        .index
+        .assert_inscription_location(first_id, first_location, Some(50 * COIN_VALUE));
     }
   }
 }
