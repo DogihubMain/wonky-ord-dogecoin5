@@ -1,4 +1,5 @@
 use crate::drc20::operation::{Action, InscriptionOp};
+use crate::drc20::params::PROTOCOL_LITERAL;
 use crate::inscription::ParsedInscription;
 use crate::sat::Sat;
 use crate::sat_point::SatPoint;
@@ -454,7 +455,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
   fn is_drc20_token(&self, inscription: &Inscription) -> bool {
     if let Some(body) = inscription.body() {
       if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(body) {
-        if json_value.get("p").and_then(|v| v.as_str()) == Some("drc-20") {
+        if json_value.get("p").and_then(|v| v.as_str()) == Some(PROTOCOL_LITERAL) {
           if json_value.get("op").is_some() {
             return true;
           }
