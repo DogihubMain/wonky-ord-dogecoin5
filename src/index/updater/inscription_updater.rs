@@ -43,6 +43,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   timestamp: u32,
   value_cache: &'a mut HashMap<OutPoint, OutPointMapValue>,
   chain: Chain,
+  drc20_tokens_only: bool,
 }
 
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
@@ -66,6 +67,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     timestamp: u32,
     value_cache: &'a mut HashMap<OutPoint, OutPointMapValue>,
     chain: Chain,
+    drc20_tokens_only: bool,
   ) -> Result<Self> {
     let next_number = number_to_id
       .iter()?
@@ -99,6 +101,7 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       timestamp,
       value_cache,
       chain,
+      drc20_tokens_only,
     })
   }
 
@@ -232,6 +235,11 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         }
 
         ParsedInscription::Complete(_inscription) => {
+          if self.drc20_tokens_only && !self.is_drc20_token(&_inscription) {
+            // Skip non-DRC20 tokens inscriptions when token_only is true
+            return Ok(0);
+          }
+
           self
             .partial_txid_to_txids
             .remove(&previous_txid_bytes.as_slice())?;
@@ -416,32 +424,43 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     let new_satpoint = new_satpoint.store();
 
     self
-        .operations
-        .entry(flotsam.txid)
-        .or_default()
-        .push(InscriptionOp {
-          txid: flotsam.txid,
-          inscription_number: self
-              .id_to_entry
-              .get(&flotsam.inscription_id.store())?
-              .map(|entry| InscriptionEntry::load(entry.value()).inscription_number),
-          inscription_id: flotsam.inscription_id,
-          action: match flotsam.origin {
-            Origin::Old(_) => Action::Transfer,
-            Origin::New {
-              fee: _,
-              inscription,
-            } => Action::New {
-              inscription,
-            },
-          },
-          old_satpoint: flotsam.old_satpoint,
-          new_satpoint: Some(Entry::load(new_satpoint)),
-        });
+      .operations
+      .entry(flotsam.txid)
+      .or_default()
+      .push(InscriptionOp {
+        txid: flotsam.txid,
+        inscription_number: self
+          .id_to_entry
+          .get(&flotsam.inscription_id.store())?
+          .map(|entry| InscriptionEntry::load(entry.value()).inscription_number),
+        inscription_id: flotsam.inscription_id,
+        action: match flotsam.origin {
+          Origin::Old(_) => Action::Transfer,
+          Origin::New {
+            fee: _,
+            inscription,
+          } => Action::New { inscription },
+        },
+        old_satpoint: flotsam.old_satpoint,
+        new_satpoint: Some(Entry::load(new_satpoint)),
+      });
 
     self.satpoint_to_id.insert(&new_satpoint, &inscription_id)?;
     self.id_to_satpoint.insert(&inscription_id, &new_satpoint)?;
 
     Ok(())
+  }
+
+  fn is_drc20_token(&self, inscription: &Inscription) -> bool {
+    if let Some(body) = inscription.body() {
+      if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(body) {
+        if json_value.get("p").and_then(|v| v.as_str()) == Some("drc-20") {
+          if json_value.get("op").is_some() {
+            return true;
+          }
+        }
+      }
+    }
+    false
   }
 }

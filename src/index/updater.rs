@@ -2,9 +2,9 @@ use bitcoincore_rpc::bitcoin::BlockHeader;
 
 use {
   self::{dune_updater::DuneUpdater, inscription_updater::InscriptionUpdater},
+  super::{fetcher::Fetcher, *},
   futures::future::try_join_all,
   std::sync::mpsc,
-  super::{*, fetcher::Fetcher},
   tokio::sync::mpsc::{error::TryRecvError, Receiver, Sender},
 };
 
@@ -435,6 +435,7 @@ impl<'index> Updater<'_> {
         block.header.time,
         value_cache,
         index.chain,
+        index.drc20_tokens_only,
       )?;
 
       if self.index.index_sats {

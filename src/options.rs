@@ -52,6 +52,8 @@ pub(crate) struct Options {
     help = "Track location of dunes. DUNES ARE IN AN UNFINISHED PRE-ALPHA STATE AND SUBJECT TO CHANGE AT ANY TIME."
   )]
   pub(crate) index_dunes: bool,
+  #[arg(long, help = "Index only DRC20 Tokens.")]
+  pub(crate) drc20_tokens_only: bool,
   #[arg(long, help = "Track location of all satoshis.")]
   pub(crate) index_sats: bool,
   #[arg(long, help = "Store transactions in index.")]

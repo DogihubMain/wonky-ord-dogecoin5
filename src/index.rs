@@ -97,6 +97,7 @@ pub(crate) struct Index {
   height_limit: Option<u32>,
   index_drc20: bool,
   index_dunes: bool,
+  drc20_tokens_only: bool,
   index_sats: bool,
   index_transactions: bool,
   unrecoverably_reorged: AtomicBool,
