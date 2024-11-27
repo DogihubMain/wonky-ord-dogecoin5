@@ -97,13 +97,13 @@ pub(crate) struct Index {
   height_limit: Option<u32>,
   index_drc20: bool,
   index_dunes: bool,
-  drc20_tokens_only: bool,
   index_sats: bool,
   index_transactions: bool,
   unrecoverably_reorged: AtomicBool,
   rpc_url: String,
   nr_parallel_requests: usize,
   chain: Chain,
+  drc20_tokens_only: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -192,6 +192,8 @@ impl Index {
     let rpc_url = options.rpc_url();
     let nr_parallel_requests = options.nr_parallel_requests();
     let cookie_file = options.cookie_file()?;
+    let drc20_tokens_only = options.drc20_tokens_only;
+
     // if cookie_file is emtpy / not set try to parse username:password from RPC URL to create the UserPass auth
     let auth: Auth = if !cookie_file.exists() {
       let url = Url::parse(&rpc_url)?;
@@ -329,7 +331,7 @@ impl Index {
             outpoint_to_sat_ranges.insert(&OutPoint::null().store(), [].as_slice())?;
           }
 
-          index_drc20 = options.index_drc20();
+          index_drc20 = options.index_dunes();
           index_dunes = options.index_dunes();
           index_sats = options.index_sats;
           index_transactions = options.index_transactions;
@@ -376,6 +378,7 @@ impl Index {
       rpc_url,
       nr_parallel_requests,
       chain: options.chain_argument,
+      drc20_tokens_only,
     })
   }
 
