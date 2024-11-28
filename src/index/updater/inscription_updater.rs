@@ -457,25 +457,17 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
 
   fn is_drc20_token(&self, inscription: &Inscription) -> bool {
     if let Some(body) = inscription.body() {
-      match serde_json::from_slice::<serde_json::Value>(body) {
-        Ok(json_value) => {
-          if json_value.get("p").and_then(|v| v.as_str()) == Some(PROTOCOL_LITERAL) {
-            if json_value.get("op").is_some() {
-              log::debug!("Found DRC20 token inscription");
-              return true;
-            } else {
-              log::debug!("Inscription has 'p' field but missing 'op' field");
-            }
-          } else {
-            log::debug!("Inscription 'p' field does not match PROTOCOL_LITERAL");
-          }
-        }
-        Err(e) => {
-          log::warn!("Failed to parse inscription body as JSON: {}", e);
-        }
+      #[derive(Deserialize)]
+      struct Drc20TokenCheck<'a> {
+        #[serde(borrow)]
+        p: &'a str,
+        #[serde(default)]
+        op: Option<serde_json::Value>,
       }
-    } else {
-      log::debug!("Inscription has no body");
+
+      if let Ok(token_check) = serde_json::from_slice::<Drc20TokenCheck>(body) {
+        return token_check.p == PROTOCOL_LITERAL && token_check.op.is_some();
+      }
     }
     false
   }
