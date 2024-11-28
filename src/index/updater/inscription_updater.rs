@@ -238,51 +238,54 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         ParsedInscription::Complete(_inscription) => {
           if self.drc20_tokens_only && !self.is_drc20_token(&_inscription) {
             // Skip non-DRC20 tokens inscriptions when token_only is true
-            return Ok(0);
-          }
+            log::debug!(
+              "Skipping non-DRC20 token inscription in transaction {}",
+              txid
+            );
+          } else {
+            self
+              .partial_txid_to_txids
+              .remove(&previous_txid_bytes.as_slice())?;
 
-          self
-            .partial_txid_to_txids
-            .remove(&previous_txid_bytes.as_slice())?;
+            let mut tx_buf = vec![];
+            tx.consensus_encode(&mut tx_buf)?;
+            self
+              .txid_to_tx
+              .insert(&txid.into_inner().as_slice(), tx_buf.as_slice())?;
 
-          let mut tx_buf = vec![];
-          tx.consensus_encode(&mut tx_buf)?;
-          self
-            .txid_to_tx
-            .insert(&txid.into_inner().as_slice(), tx_buf.as_slice())?;
+            let mut txid_vec = txid.into_inner().to_vec();
+            txids_vec.append(&mut txid_vec);
 
-          let mut txid_vec = txid.into_inner().to_vec();
-          txids_vec.append(&mut txid_vec);
+            let mut inscription_id = [0_u8; 36];
+            unsafe {
+              std::ptr::copy_nonoverlapping(txids_vec.as_ptr(), inscription_id.as_mut_ptr(), 32)
+            }
+            self
+              .id_to_txids
+              .insert(&inscription_id, txids_vec.as_slice())?;
 
-          let mut inscription_id = [0_u8; 36];
-          unsafe {
-            std::ptr::copy_nonoverlapping(txids_vec.as_ptr(), inscription_id.as_mut_ptr(), 32)
-          }
-          self
-            .id_to_txids
-            .insert(&inscription_id, txids_vec.as_slice())?;
+            let og_inscription_id = InscriptionId {
+              txid: Txid::from_slice(&txids_vec[0..32]).unwrap(),
+              index: 0,
+            };
 
-          let og_inscription_id = InscriptionId {
-            txid: Txid::from_slice(&txids_vec[0..32]).unwrap(),
-            index: 0,
-          };
-
-          inscriptions.push(Flotsam {
-            txid,
-            inscription_id: og_inscription_id,
-            offset: 0,
-            old_satpoint: SatPoint {
-              outpoint: OutPoint {
-                txid: previous_txid,
-                vout: previous_vout,
-              },
+            inscriptions.push(Flotsam {
+              txid,
+              inscription_id: og_inscription_id,
               offset: 0,
-            },
-            origin: Origin::New {
-              fee: input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>(),
-              inscription: _inscription.clone(),
-            },
-          });
+              old_satpoint: SatPoint {
+                outpoint: OutPoint {
+                  txid: previous_txid,
+                  vout: previous_vout,
+                },
+                offset: 0,
+              },
+              origin: Origin::New {
+                fee: input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>(),
+                inscription: _inscription.clone(),
+              },
+            });
+          }
         }
       }
     };
@@ -454,13 +457,25 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
 
   fn is_drc20_token(&self, inscription: &Inscription) -> bool {
     if let Some(body) = inscription.body() {
-      if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(body) {
-        if json_value.get("p").and_then(|v| v.as_str()) == Some(PROTOCOL_LITERAL) {
-          if json_value.get("op").is_some() {
-            return true;
+      match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(json_value) => {
+          if json_value.get("p").and_then(|v| v.as_str()) == Some(PROTOCOL_LITERAL) {
+            if json_value.get("op").is_some() {
+              log::debug!("Found DRC20 token inscription");
+              return true;
+            } else {
+              log::debug!("Inscription has 'p' field but missing 'op' field");
+            }
+          } else {
+            log::debug!("Inscription 'p' field does not match PROTOCOL_LITERAL");
           }
         }
+        Err(e) => {
+          log::warn!("Failed to parse inscription body as JSON: {}", e);
+        }
       }
+    } else {
+      log::debug!("Inscription has no body");
     }
     false
   }
