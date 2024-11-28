@@ -32,149 +32,165 @@ pub struct ExecutionMessage {
 }
 
 pub(super) struct Drc20Updater<'a, 'db, 'tx> {
+  drc20_token_info: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
+  drc20_token_holder: &'a mut MultimapTable<'db, 'tx, &'static str, &'static str>,
+  drc20_token_balance: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
+  drc20_inscribe_transfer: &'a mut Table<'db, 'tx, &'static [u8; 36], &'static [u8]>,
+  drc20_transferable_log: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
+  inscription_id_to_inscription_entry:
+    &'a Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
+  transaction_id_to_transaction: &'a mut Table<'db, 'tx, &'static TxidValue, &'static [u8]>,
+}
+
+impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
+  pub(super) fn new(
     drc20_token_info: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
     drc20_token_holder: &'a mut MultimapTable<'db, 'tx, &'static str, &'static str>,
     drc20_token_balance: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
     drc20_inscribe_transfer: &'a mut Table<'db, 'tx, &'static [u8; 36], &'static [u8]>,
     drc20_transferable_log: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
-    inscription_id_to_inscription_entry: &'a Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
+    inscription_id_to_inscription_entry: &'a Table<
+      'db,
+      'tx,
+      &'static InscriptionIdValue,
+      InscriptionEntryValue,
+    >,
     transaction_id_to_transaction: &'a mut Table<'db, 'tx, &'static TxidValue, &'static [u8]>,
-}
+  ) -> Result<Self> {
+    Ok(Self {
+      drc20_token_info,
+      drc20_token_holder,
+      drc20_token_balance,
+      drc20_inscribe_transfer,
+      drc20_transferable_log,
+      inscription_id_to_inscription_entry,
+      transaction_id_to_transaction,
+    })
+  }
 
-impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
-    pub(super) fn new(
-        drc20_token_info: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
-        drc20_token_holder: &'a mut MultimapTable<'db, 'tx, &'static str, &'static str>,
-        drc20_token_balance: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
-        drc20_inscribe_transfer: &'a mut Table<'db, 'tx, &'static [u8; 36], &'static [u8]>,
-        drc20_transferable_log: &'a mut Table<'db, 'tx, &'static str, &'static [u8]>,
-        inscription_id_to_inscription_entry: &'a Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
-        transaction_id_to_transaction: &'a mut Table<'db, 'tx, &'static TxidValue, &'static [u8]>,
-    ) -> Result<Self> {
-        Ok(Self {
-            drc20_token_info,
-            drc20_token_holder,
-            drc20_token_balance,
-            drc20_inscribe_transfer,
-            drc20_transferable_log,
-            inscription_id_to_inscription_entry,
-            transaction_id_to_transaction,
-        })
+  pub(crate) fn index_block(
+    &mut self,
+    context: BlockContext,
+    block: &BlockData,
+    operations: HashMap<Txid, Vec<InscriptionOp>>,
+  ) -> Result {
+    let start = Instant::now();
+    let mut messages_size = 0;
+    for (tx, txid) in block.txdata.iter() {
+      // skip coinbase transaction.
+      if tx
+        .input
+        .first()
+        .map(|tx_in| tx_in.previous_output.is_null())
+        .unwrap_or_default()
+      {
+        continue;
+      }
+
+      // index inscription operations.
+      if let Some(tx_operations) = operations.get(txid) {
+        // Resolve and execute messages.
+        let messages = self.resolve_message(tx, tx_operations)?;
+        for msg in messages.iter() {
+          self.execute_message(context, msg)?;
+        }
+        messages_size += messages.len();
+      }
     }
 
-    pub(crate) fn index_block(
-        &mut self,
-        context: BlockContext,
-        block: &BlockData,
-        operations: HashMap<Txid, Vec<InscriptionOp>>,
-    ) -> Result {
-        let start = Instant::now();
-        let mut messages_size = 0;
-        for (tx, txid) in block.txdata.iter() {
-            // skip coinbase transaction.
-            if tx
-                .input
-                .first()
-                .map(|tx_in| tx_in.previous_output.is_null())
-                .unwrap_or_default()
-            {
-                continue;
-            }
-
-            // index inscription operations.
-            if let Some(tx_operations) = operations.get(txid) {
-                // Resolve and execute messages.
-                let messages = self.resolve_message(tx, tx_operations)?;
-                for msg in messages.iter() {
-                    self.execute_message(context, msg)?;
-                }
-                messages_size += messages.len();
-            }
-        }
-
-        log::info!(
+    log::info!(
       "DRC20 Updater indexed block {} with {} messages in {} ms",
       context.blockheight,
       messages_size,
       (Instant::now() - start).as_millis(),
     );
-        Ok(())
-    }
+    Ok(())
+  }
 
-    pub fn resolve_message(
-        &mut self,
-        tx: &Transaction,
-        operations: &[InscriptionOp],
-    ) -> Result<Vec<Message>> {
-        let mut messages = Vec::new();
-        let mut operation_iter = operations.iter().peekable();
-        let new_inscriptions: Vec<Inscription> = match Inscription::from_transactions(vec![tx.clone()]) {
-            ParsedInscription::None => { vec![] }
-            ParsedInscription::Partial => { vec![] }
-            ParsedInscription::Complete(inscription) => vec![inscription]
-        };
+  pub fn resolve_message(
+    &mut self,
+    tx: &Transaction,
+    operations: &[InscriptionOp],
+  ) -> Result<Vec<Message>> {
+    let mut messages = Vec::new();
+    let mut operation_iter = operations.iter().peekable();
+    let new_inscriptions: Vec<Inscription> = match Inscription::from_transactions(vec![tx.clone()])
+    {
+      ParsedInscription::None => {
+        vec![]
+      }
+      ParsedInscription::Partial => {
+        vec![]
+      }
+      ParsedInscription::Complete(inscription) => vec![inscription],
+    };
 
-        for input in &tx.input {
-            // "operations" is a list of all the operations in the current block, and they are ordered.
-            // We just need to find the operation corresponding to the current transaction here.
-            while let Some(operation) = operation_iter.peek() {
-                if operation.old_satpoint.outpoint != input.previous_output {
-                    break;
-                }
-                let operation = operation_iter.next().unwrap();
-
-                // Parse DRC20 message through inscription operation.
-                if let Some(msg) =
-                    Message::resolve(&mut self.drc20_inscribe_transfer, &new_inscriptions, operation)?
-                {
-                    messages.push(msg);
-                    continue;
-                }
-            }
+    for input in &tx.input {
+      // "operations" is a list of all the operations in the current block, and they are ordered.
+      // We just need to find the operation corresponding to the current transaction here.
+      while let Some(operation) = operation_iter.peek() {
+        if operation.old_satpoint.outpoint != input.previous_output {
+          break;
         }
-        Ok(messages)
-    }
+        let operation = operation_iter.next().unwrap();
 
-    pub fn execute_message(&mut self, context: BlockContext, msg: &Message) -> Result {
-        let exec_msg = self.create_execution_message(msg, context.network)?;
-        let _ = match &exec_msg.op {
-            Operation::Deploy(deploy) => {
-                Self::process_deploy(self, context.clone(), &exec_msg, deploy.clone())
-            }
-            Operation::Mint(mint) => Self::process_mint(self, context.clone(), &exec_msg.clone(), mint.clone()),
-            Operation::InscribeTransfer(transfer) => {
-                Self::process_inscribe_transfer(self, context.clone(), &exec_msg.clone(), transfer.clone())
-            }
-            Operation::Transfer(_) => Self::process_transfer(self, context.clone(), &exec_msg.clone()),
-        };
-        Ok(())
+        // Parse DRC20 message through inscription operation.
+        if let Some(msg) = Message::resolve(
+          &mut self.drc20_inscribe_transfer,
+          &new_inscriptions,
+          operation,
+        )? {
+          messages.push(msg);
+          continue;
+        }
+      }
     }
+    Ok(messages)
+  }
 
-    pub fn create_execution_message(
-        &mut self,
-        msg: &Message,
-        network: Network,
-    ) -> Result<ExecutionMessage> {
-        Ok(ExecutionMessage {
-            txid: msg.txid,
-            inscription_id: msg.inscription_id,
-            inscription_number: Self::get_inscription_number_by_id(self, msg.inscription_id)?,
-            old_satpoint: msg.old_satpoint,
-            new_satpoint: msg
-                .new_satpoint
-                .ok_or(anyhow!("new satpoint cannot be None"))?,
-            from: Self::get_script_key_on_satpoint(self, msg.old_satpoint, network)?,
-            to: if msg.sat_in_outputs {
-                Some(Self::get_script_key_on_satpoint(self,
-                    msg.new_satpoint.unwrap(),
-                    network,
-                )?)
-            } else {
-                None
-            },
-            op: msg.op.clone(),
-        })
-    }
+  pub fn execute_message(&mut self, context: BlockContext, msg: &Message) -> Result {
+    let exec_msg = self.create_execution_message(msg, context.network)?;
+    let _ = match &exec_msg.op {
+      Operation::Deploy(deploy) => {
+        Self::process_deploy(self, context.clone(), &exec_msg, deploy.clone())
+      }
+      Operation::Mint(mint) => {
+        Self::process_mint(self, context.clone(), &exec_msg.clone(), mint.clone())
+      }
+      Operation::InscribeTransfer(transfer) => {
+        Self::process_inscribe_transfer(self, context.clone(), &exec_msg.clone(), transfer.clone())
+      }
+      Operation::Transfer(_) => Self::process_transfer(self, context.clone(), &exec_msg.clone()),
+    };
+    Ok(())
+  }
+
+  pub fn create_execution_message(
+    &mut self,
+    msg: &Message,
+    network: Network,
+  ) -> Result<ExecutionMessage> {
+    Ok(ExecutionMessage {
+      txid: msg.txid,
+      inscription_id: msg.inscription_id,
+      inscription_number: Self::get_inscription_number_by_id(self, msg.inscription_id)?,
+      old_satpoint: msg.old_satpoint,
+      new_satpoint: msg
+        .new_satpoint
+        .ok_or(anyhow!("new satpoint cannot be None"))?,
+      from: Self::get_script_key_on_satpoint(self, msg.old_satpoint, network)?,
+      to: if msg.sat_in_outputs {
+        Some(Self::get_script_key_on_satpoint(
+          self,
+          msg.new_satpoint.unwrap(),
+          network,
+        )?)
+      } else {
+        None
+      },
+      op: msg.op.clone(),
+    })
+  }
 
   fn process_deploy(
     &mut self,
@@ -492,217 +508,222 @@ impl<'a, 'db, 'tx> Drc20Updater<'a, 'db, 'tx> {
     }))
   }
 
-    fn insert_transferable(
-        &mut self,
-        script: &ScriptKey,
-        tick: &Tick,
-        inscription: TransferableLog,
-    ) -> Result<(), redb::Error> {
-        self.drc20_transferable_log.insert(
-            script_tick_id_key(script, tick, &inscription.inscription_id).as_str(),
-            rmp_serde::to_vec(&inscription).unwrap().as_slice(),
-        )?;
-        Ok(())
+  fn insert_transferable(
+    &mut self,
+    script: &ScriptKey,
+    tick: &Tick,
+    inscription: TransferableLog,
+  ) -> Result<(), redb::Error> {
+    self.drc20_transferable_log.insert(
+      script_tick_id_key(script, tick, &inscription.inscription_id).as_str(),
+      rmp_serde::to_vec(&inscription).unwrap().as_slice(),
+    )?;
+    Ok(())
+  }
+
+  fn remove_transferable(
+    &mut self,
+    script: &ScriptKey,
+    tick: &Tick,
+    inscription_id: InscriptionId,
+  ) -> Result<(), redb::Error> {
+    self
+      .drc20_transferable_log
+      .remove(script_tick_id_key(script, tick, &inscription_id).as_str())?;
+    Ok(())
+  }
+
+  fn get_transferable(&self, script: &ScriptKey) -> Result<Vec<TransferableLog>, redb::Error> {
+    Ok(
+      self
+        .drc20_transferable_log
+        .range(min_script_tick_key(script).as_str()..max_script_tick_key(script).as_str())?
+        .flat_map(|result| {
+          result.map(|(_, v)| rmp_serde::from_slice::<TransferableLog>(v.value()).unwrap())
+        })
+        .collect(),
+    )
+  }
+
+  fn get_transferable_by_tick(
+    &self,
+    script: &ScriptKey,
+    tick: &Tick,
+  ) -> Result<Vec<TransferableLog>, redb::Error> {
+    Ok(
+      self
+        .drc20_transferable_log
+        .range(
+          min_script_tick_id_key(script, tick).as_str()
+            ..max_script_tick_id_key(script, tick).as_str(),
+        )?
+        .flat_map(|result| {
+          result.map(|(_, v)| rmp_serde::from_slice::<TransferableLog>(v.value()).unwrap())
+        })
+        .collect(),
+    )
+  }
+
+  fn get_transferable_by_id(
+    &self,
+    script: &ScriptKey,
+    inscription_id: &InscriptionId,
+  ) -> Result<Option<TransferableLog>, redb::Error> {
+    Ok(
+      Self::get_transferable(self, script)?
+        .iter()
+        .find(|log| log.inscription_id == *inscription_id)
+        .cloned(),
+    )
+  }
+
+  fn insert_inscribe_transfer_inscription(
+    &mut self,
+    inscription_id: InscriptionId,
+    transfer_info: TransferInfo,
+  ) -> Result<(), redb::Error> {
+    self.drc20_inscribe_transfer.insert(
+      &inscription_id.store(),
+      rmp_serde::to_vec(&transfer_info).unwrap().as_slice(),
+    )?;
+    Ok(())
+  }
+
+  fn remove_inscribe_transfer_inscription(
+    &mut self,
+    inscription_id: InscriptionId,
+  ) -> Result<(), redb::Error> {
+    self
+      .drc20_inscribe_transfer
+      .remove(&inscription_id.store())?;
+    Ok(())
+  }
+
+  fn update_token_balance(
+    &mut self,
+    script_key: &ScriptKey,
+    new_balance: Balance,
+  ) -> Result<(), redb::Error> {
+    self.drc20_token_balance.insert(
+      script_tick_key(script_key, &new_balance.tick).as_str(),
+      bincode::serialize(&new_balance).unwrap().as_slice(),
+    )?;
+    Ok(())
+  }
+
+  fn get_balance(
+    &self,
+    script_key: &ScriptKey,
+    tick: &Tick,
+  ) -> Result<Option<Balance>, redb::Error> {
+    Ok(
+      self
+        .drc20_token_balance
+        .get(script_tick_key(script_key, tick).as_str())?
+        .map(|v| bincode::deserialize::<Balance>(v.value()).unwrap()),
+    )
+  }
+
+  fn insert_token_info(&mut self, tick: &Tick, new_info: &TokenInfo) -> Result<(), redb::Error> {
+    self.drc20_token_info.insert(
+      tick.to_lowercase().hex().as_str(),
+      bincode::serialize(new_info).unwrap().as_slice(),
+    )?;
+    Ok(())
+  }
+
+  fn update_mint_token_info(
+    &mut self,
+    tick: &Tick,
+    minted_amt: u128,
+    minted_block_number: u64,
+  ) -> Result<(), redb::Error> {
+    let mut info = Self::get_token_info(self, tick)?
+      .unwrap_or_else(|| panic!("token {} not exist", tick.as_str()));
+
+    info.minted = minted_amt;
+    info.latest_mint_number = minted_block_number;
+
+    self.drc20_token_info.insert(
+      tick.to_lowercase().hex().as_str(),
+      bincode::serialize(&info).unwrap().as_slice(),
+    )?;
+    Ok(())
+  }
+
+  pub(super) fn get_token_info(&self, tick: &Tick) -> Result<Option<TokenInfo>, redb::Error> {
+    Ok(
+      self
+        .drc20_token_info
+        .get(tick.to_lowercase().hex().as_str())?
+        .map(|v| bincode::deserialize::<TokenInfo>(v.value()).unwrap()),
+    )
+  }
+
+  pub(super) fn get_script_key_on_satpoint(
+    &self,
+    satpoint: SatPoint,
+    network: Network,
+  ) -> Result<ScriptKey> {
+    if let Some(transaction) = self
+      .transaction_id_to_transaction
+      .get(&satpoint.outpoint.txid.store())?
+    {
+      let tx: Transaction = consensus::encode::deserialize(transaction.value())?;
+      let pub_key = tx.output[satpoint.outpoint.vout as usize]
+        .script_pubkey
+        .clone();
+      Ok(ScriptKey::from_script(&pub_key, network))
+    } else {
+      Err(anyhow!(
+        "failed to get tx out! error: outpoint {} not found",
+        satpoint.outpoint
+      ))
     }
+  }
 
-    fn remove_transferable(
-        &mut self,
-        script: &ScriptKey,
-        tick: &Tick,
-        inscription_id: InscriptionId,
-    ) -> Result<(), redb::Error> {
-        self
-            .drc20_transferable_log
-            .remove(script_tick_id_key(script, tick, &inscription_id).as_str())?;
-        Ok(())
-    }
-
-    fn get_transferable(
-        &self,
-        script: &ScriptKey
-    ) -> Result<Vec<TransferableLog>, redb::Error> {
-        Ok(
-            self.drc20_transferable_log
-                .range(min_script_tick_key(script).as_str()..max_script_tick_key(script).as_str())?
-                .flat_map(|result| {
-                    result.map(|(_, v)| rmp_serde::from_slice::<TransferableLog>(v.value()).unwrap())
-                })
-                .collect(),
-        )
-    }
-
-    fn get_transferable_by_tick(
-        &self,
-        script: &ScriptKey,
-        tick: &Tick,
-    ) -> Result<Vec<TransferableLog>, redb::Error> {
-        Ok(
-            self.drc20_transferable_log
-                .range(
-                    min_script_tick_id_key(script, tick).as_str()
-                        ..max_script_tick_id_key(script, tick).as_str(),
-                )?
-                .flat_map(|result| {
-                    result.map(|(_, v)| rmp_serde::from_slice::<TransferableLog>(v.value()).unwrap())
-                })
-                .collect(),
-        )
-    }
-
-    fn get_transferable_by_id(
-        &self,
-        script: &ScriptKey,
-        inscription_id: &InscriptionId,
-    ) -> Result<Option<TransferableLog>, redb::Error> {
-        Ok(
-            Self::get_transferable(self, script)?
-                .iter()
-                .find(|log| log.inscription_id == *inscription_id)
-                .cloned(),
-        )
-    }
-
-    fn insert_inscribe_transfer_inscription(
-        &mut self,
-        inscription_id: InscriptionId,
-        transfer_info: TransferInfo,
-    ) -> Result<(), redb::Error> {
-        self.drc20_inscribe_transfer.insert(
-            &inscription_id.store(),
-            rmp_serde::to_vec(&transfer_info).unwrap().as_slice(),
-        )?;
-        Ok(())
-    }
-
-    fn remove_inscribe_transfer_inscription(
-        &mut self,
-        inscription_id: InscriptionId,
-    ) -> Result<(), redb::Error> {
-        self.drc20_inscribe_transfer
-            .remove(&inscription_id.store())?;
-        Ok(())
-    }
-
-    fn update_token_balance(
-        &mut self,
-        script_key: &ScriptKey,
-        new_balance: Balance,
-    ) -> Result<(), redb::Error> {
-        self.drc20_token_balance.insert(
-            script_tick_key(script_key, &new_balance.tick).as_str(),
-            bincode::serialize(&new_balance).unwrap().as_slice(),
-        )?;
-        Ok(())
-    }
-
-    fn get_balance(
-        &self,
-        script_key: &ScriptKey,
-        tick: &Tick,
-    ) -> Result<Option<Balance>, redb::Error> {
-        Ok(
-            self.drc20_token_balance
-                .get(script_tick_key(script_key, tick).as_str())?
-                .map(|v| bincode::deserialize::<Balance>(v.value()).unwrap()),
-        )
-    }
-
-    fn insert_token_info(&mut self,
-        tick: &Tick,
-        new_info: &TokenInfo
-    ) -> Result<(), redb::Error> {
-        self.drc20_token_info.insert(
-            tick.to_lowercase().hex().as_str(),
-            bincode::serialize(new_info).unwrap().as_slice(),
-        )?;
-        Ok(())
-    }
-
-    fn update_mint_token_info(
-        &mut self,
-        tick: &Tick,
-        minted_amt: u128,
-        minted_block_number: u64,
-    ) -> Result<(), redb::Error> {
-        let mut info = Self::get_token_info(self, tick)?
-            .unwrap_or_else(|| panic!("token {} not exist", tick.as_str()));
-
-        info.minted = minted_amt;
-        info.latest_mint_number = minted_block_number;
-
-        self.drc20_token_info.insert(
-            tick.to_lowercase().hex().as_str(),
-            bincode::serialize(&info).unwrap().as_slice(),
-        )?;
-        Ok(())
-    }
-
-    pub(super) fn get_token_info(
-        &self,
-        tick: &Tick
-    ) -> Result <Option<TokenInfo>, redb::Error> {
-        Ok(
-            self.drc20_token_info
-                .get(tick.to_lowercase().hex().as_str())?
-                .map(|v| bincode::deserialize::<TokenInfo>(v.value()).unwrap()),
-        )
-    }
-
-    pub(super) fn get_script_key_on_satpoint(
-        &self,
-        satpoint: SatPoint,
-        network: Network,
-    ) -> Result<ScriptKey> {
-        if let Some(transaction) = self.transaction_id_to_transaction
-            .get(&satpoint.outpoint.txid.store())? {
-            let tx: Transaction = consensus::encode::deserialize(transaction.value())?;
-            let pub_key = tx.output[satpoint.outpoint.vout as usize].script_pubkey.clone();
-            Ok(ScriptKey::from_script(&pub_key, network))
-        } else {
-            Err(anyhow!(
-                "failed to get tx out! error: outpoint {} not found",
-                satpoint.outpoint
-            ))
-        }
-    }
-
-    fn get_inscription_number_by_id(&mut self, inscription_id: InscriptionId) -> Result<u64> {
-        Self::get_number_by_inscription_id(self, inscription_id)
-            .map_err(|e| anyhow!("failed to get inscription number from state! error: {e}"))?
-            .ok_or(anyhow!(
+  fn get_inscription_number_by_id(&mut self, inscription_id: InscriptionId) -> Result<u64> {
+    Self::get_number_by_inscription_id(self, inscription_id)
+      .map_err(|e| anyhow!("failed to get inscription number from state! error: {e}"))?
+      .ok_or(anyhow!(
         "failed to get inscription number! error: inscription id {} not found",
         inscription_id
       ))
-    }
+  }
 
-    pub fn get_number_by_inscription_id(
-        &self,
-        inscription_id: InscriptionId,
-    ) -> Result<Option<u64>, redb::Error> {
-        let mut key = [0; 36];
-        let (txid, index) = key.split_at_mut(32);
-        txid.copy_from_slice(inscription_id.txid.as_ref());
-        index.copy_from_slice(&inscription_id.index.to_be_bytes());
-        Ok(
-            self.inscription_id_to_inscription_entry
-                .get(&key)?
-                .map(|value| value.value().2),
-        )
-    }
+  pub fn get_number_by_inscription_id(
+    &self,
+    inscription_id: InscriptionId,
+  ) -> Result<Option<u64>, redb::Error> {
+    let mut key = [0; 36];
+    let (txid, index) = key.split_at_mut(32);
+    txid.copy_from_slice(inscription_id.txid.as_ref());
+    index.copy_from_slice(&inscription_id.index.to_be_bytes());
+    Ok(
+      self
+        .inscription_id_to_inscription_entry
+        .get(&key)?
+        .map(|value| value.value().2),
+    )
+  }
 
-    fn remove_token_holder(&mut self, script_key: &ScriptKey, tick: Tick) -> std::result::Result<(), redb::Error> {
-        self.drc20_token_holder.remove(
-            tick.to_lowercase().hex().as_str(),
-            script_key.to_string().as_str(),
-        )?;
-        Ok(())
-    }
+  fn remove_token_holder(
+    &mut self,
+    script_key: &ScriptKey,
+    tick: Tick,
+  ) -> std::result::Result<(), redb::Error> {
+    self.drc20_token_holder.remove(
+      tick.to_lowercase().hex().as_str(),
+      script_key.to_string().as_str(),
+    )?;
+    Ok(())
+  }
 
-    fn insert_token_holder(&mut self, script_key: &ScriptKey, tick: Tick) -> Result<(), redb::Error> {
-        self.drc20_token_holder.insert(
-            tick.to_lowercase().hex().as_str(),
-            script_key.to_string().as_str(),
-        )?;
-        Ok(())
-    }
+  fn insert_token_holder(&mut self, script_key: &ScriptKey, tick: Tick) -> Result<(), redb::Error> {
+    self.drc20_token_holder.insert(
+      tick.to_lowercase().hex().as_str(),
+      script_key.to_string().as_str(),
+    )?;
+    Ok(())
+  }
 }

@@ -1,5 +1,4 @@
 use crate::drc20::operation::{Action, InscriptionOp};
-use crate::drc20::params::PROTOCOL_LITERAL;
 use crate::inscription::ParsedInscription;
 use crate::sat::Sat;
 use crate::sat_point::SatPoint;
@@ -236,56 +235,48 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         }
 
         ParsedInscription::Complete(_inscription) => {
-          if self.drc20_tokens_only && !self.is_drc20_token(&_inscription) {
-            // Skip non-DRC20 tokens inscriptions when token_only is true
-            log::debug!(
-              "Skipping non-DRC20 token inscription in transaction {}",
-              txid
-            );
-          } else {
-            self
-              .partial_txid_to_txids
-              .remove(&previous_txid_bytes.as_slice())?;
+          self
+            .partial_txid_to_txids
+            .remove(&previous_txid_bytes.as_slice())?;
 
-            let mut tx_buf = vec![];
-            tx.consensus_encode(&mut tx_buf)?;
-            self
-              .txid_to_tx
-              .insert(&txid.into_inner().as_slice(), tx_buf.as_slice())?;
+          let mut tx_buf = vec![];
+          tx.consensus_encode(&mut tx_buf)?;
+          self
+            .txid_to_tx
+            .insert(&txid.into_inner().as_slice(), tx_buf.as_slice())?;
 
-            let mut txid_vec = txid.into_inner().to_vec();
-            txids_vec.append(&mut txid_vec);
+          let mut txid_vec = txid.into_inner().to_vec();
+          txids_vec.append(&mut txid_vec);
 
-            let mut inscription_id = [0_u8; 36];
-            unsafe {
-              std::ptr::copy_nonoverlapping(txids_vec.as_ptr(), inscription_id.as_mut_ptr(), 32)
-            }
-            self
-              .id_to_txids
-              .insert(&inscription_id, txids_vec.as_slice())?;
-
-            let og_inscription_id = InscriptionId {
-              txid: Txid::from_slice(&txids_vec[0..32]).unwrap(),
-              index: 0,
-            };
-
-            inscriptions.push(Flotsam {
-              txid,
-              inscription_id: og_inscription_id,
-              offset: 0,
-              old_satpoint: SatPoint {
-                outpoint: OutPoint {
-                  txid: previous_txid,
-                  vout: previous_vout,
-                },
-                offset: 0,
-              },
-              origin: Origin::New {
-                fee: input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>(),
-                inscription: _inscription.clone(),
-              },
-            });
+          let mut inscription_id = [0_u8; 36];
+          unsafe {
+            std::ptr::copy_nonoverlapping(txids_vec.as_ptr(), inscription_id.as_mut_ptr(), 32)
           }
+          self
+            .id_to_txids
+            .insert(&inscription_id, txids_vec.as_slice())?;
+
+          let og_inscription_id = InscriptionId {
+            txid: Txid::from_slice(&txids_vec[0..32]).unwrap(),
+            index: 0,
+          };
+
+          inscriptions.push(Flotsam {
+            txid,
+            inscription_id: og_inscription_id,
+            offset: 0,
+            old_satpoint: SatPoint {
+              outpoint: OutPoint {
+                txid: previous_txid,
+                vout: previous_vout,
+              },
+              offset: 0,
+            },
+            origin: Origin::New {
+              fee: input_value - tx.output.iter().map(|txout| txout.value).sum::<u64>(),
+              inscription: _inscription.clone(),
+            },
+          });
         }
       }
     };
@@ -453,22 +444,5 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     self.id_to_satpoint.insert(&inscription_id, &new_satpoint)?;
 
     Ok(())
-  }
-
-  fn is_drc20_token(&self, inscription: &Inscription) -> bool {
-    if let Some(body) = inscription.body() {
-      #[derive(Deserialize)]
-      struct Drc20TokenCheck<'a> {
-        #[serde(borrow)]
-        p: &'a str,
-        #[serde(default)]
-        op: Option<serde_json::Value>,
-      }
-
-      if let Ok(token_check) = serde_json::from_slice::<Drc20TokenCheck>(body) {
-        return token_check.p == PROTOCOL_LITERAL && token_check.op.is_some();
-      }
-    }
-    false
   }
 }
